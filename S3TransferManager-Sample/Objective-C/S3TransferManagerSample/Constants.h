@@ -39,3 +39,4 @@ FOUNDATION_EXPORT NSString *const StatusLabelUploading;
 FOUNDATION_EXPORT NSString *const StatusLabelDownloading;
 FOUNDATION_EXPORT NSString *const StatusLabelFailed;
 FOUNDATION_EXPORT NSString *const StatusLabelCompleted;
+FOUNDATION_EXPORT NSString *const StatusLabelCancelled;

@@ -17,8 +17,12 @@
 
 @interface SecondViewController : UIViewController
 
+// Status Label
 @property (nonatomic, weak) IBOutlet UILabel *downloadStatusLabel;
 @property (strong, nonatomic) IBOutlet UIButton *resumeButton;
+@property (weak, nonatomic) IBOutlet UIButton *downloadButton;
+@property (weak, nonatomic) IBOutlet UIButton *pauseButton;
+@property (weak, nonatomic) IBOutlet UIButton *cancelButton;
 
 - (IBAction)downloadButtonPressed:(id)sender; 
 - (IBAction)cancelButtonPressed:(id)sender;

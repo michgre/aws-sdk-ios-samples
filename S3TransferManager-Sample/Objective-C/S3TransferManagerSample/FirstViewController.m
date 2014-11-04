@@ -17,62 +17,145 @@
 #import "S3.h"
 #import "Constants.h"
 
+// Enum used to set UI state
+typedef enum UIState
+{
+    Paused, Cancelled, Ready, Uploading, Completed, Failed
+} UIState;
+
 @interface FirstViewController ()
 
+// URLs for test files
 @property (nonatomic, strong) NSURL *testFileURL1;
 @property (nonatomic, strong) NSURL *testFileURL2;
 @property (nonatomic, strong) NSURL *testFileURL3;
+
+// Labels to display downloaded file names
+@property (weak, nonatomic) IBOutlet UILabel *file1Label;
+@property (weak, nonatomic) IBOutlet UILabel *file2Label;
+@property (weak, nonatomic) IBOutlet UILabel *file3Label;
+
+// Upload Requests for test files
 @property (nonatomic, strong) AWSS3TransferManagerUploadRequest *uploadRequest1;
 @property (nonatomic, strong) AWSS3TransferManagerUploadRequest *uploadRequest2;
 @property (nonatomic, strong) AWSS3TransferManagerUploadRequest *uploadRequest3;
-@property (strong, nonatomic) IBOutlet UIProgressView *progressView1;
-@property (strong, nonatomic) IBOutlet UIProgressView *progressView2;
-@property (strong, nonatomic) IBOutlet UIProgressView *progressView3;
 
-
+// Data used to calculate progress bar display
 @property (nonatomic) uint64_t file1Size;
 @property (nonatomic) uint64_t file2Size;
 @property (nonatomic) uint64_t file3Size;
-
 @property (nonatomic) uint64_t file1AlreadyUpload;
 @property (nonatomic) uint64_t file2AlreadyUpload;
 @property (nonatomic) uint64_t file3AlreadyUpload;
+
+@property (nonatomic, strong) NSMutableDictionary *downloadedBytes;
 
 @end
 
 @implementation FirstViewController
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
+// Set button state based on UIState enum
+- (void) updateUIForState:(enum UIState )state
+{
+    switch (state)
+    {
+        case Paused:
+            self.uploadStatusLabel.text = StatusLabelReady;
+            self.uploadButton.enabled = false;
+            self.pauseButton.enabled = false;
+            self.resumeButton.enabled = true;
+            self.cancelButton.enabled = true;
+            break;
+            
+        case Cancelled:
+            self.uploadStatusLabel.text = StatusLabelReady;
+            self.uploadButton.enabled = true;
+            self.cancelButton.enabled = false;
+            self.pauseButton.enabled = false;
+            self.resumeButton.enabled = false;
+            break;
+            
+        case Ready:
+            self.uploadStatusLabel.text = StatusLabelReady;
+            self.uploadButton.enabled = true;
+            self.cancelButton.enabled = false;
+            self.pauseButton.enabled = false;
+            self.resumeButton.enabled = false;
+            self.file1Label.text = S3KeyUploadName1;
+            self.file2Label.text = S3KeyUploadName2;
+            self.file3Label.text = S3KeyUploadName3;
+            break;
+            
+        case Uploading:
+            self.uploadStatusLabel.text = StatusLabelUploading;
+            
+            self.file1Label.text = S3KeyUploadName1;
+            self.file2Label.text = S3KeyUploadName2;
+            self.file3Label.text = S3KeyUploadName3;
+            self.uploadButton.enabled = false;
+            self.cancelButton.enabled = true;
+            self.pauseButton.enabled = true;
+            self.resumeButton.enabled = false;
+            break;
+            
+        case Completed:
+            self.uploadStatusLabel.text = StatusLabelCompleted;
+            self.uploadButton.enabled = true;
+            self.cancelButton.enabled = false;
+            self.pauseButton.enabled = false;
+            self.resumeButton.enabled = false;
+            break;
+            
+        case Failed:
+            self.uploadStatusLabel.text = StatusLabelFailed;
+            self.uploadButton.enabled = false;
+            self.pauseButton.enabled = false;
+            self.resumeButton.enabled = false;
+            self.cancelButton.enabled = false;
+            break;
+    }
+}
 
+- (void)viewDidLoad {
+    
+    [super viewDidLoad];
     [self cleanProgress];
     
+    self.downloadedBytes = [NSMutableDictionary new];
     
+    // Create 3 text files to upload to S3
     BFTask *task = [BFTask taskWithResult:nil];
     [[task continueWithBlock:^id(BFTask *task) {
-        // Creates a test file in the temporary directory
+        
+        // Creates a text file in the temporary directory
         self.testFileURL1 = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:S3KeyUploadName1]];
-
+        
+        // Create some text for the file
         NSMutableString *dataString = [NSMutableString new];
         for (int32_t i = 1; i < 2000000; i++) {
             [dataString appendFormat:@"%d\n", i];
         }
-
+        
+        // Write the text to the file
         NSError *error = nil;
         [dataString writeToURL:self.testFileURL1
                     atomically:YES
                       encoding:NSUTF8StringEncoding
                          error:&error];
-
         
+        // Creates a text file in the temporary directory
         self.testFileURL2 = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:S3KeyUploadName2]];
+        
+        // Write the text to the file
         [dataString writeToURL:self.testFileURL2
                     atomically:YES
                       encoding:NSUTF8StringEncoding
                          error:&error];
         
-        
+        // Creates a text file in the temporary directory
         self.testFileURL3 = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:S3KeyUploadName3]];
+        
+        // Write the text to the file
         [dataString writeToURL:self.testFileURL3
                     atomically:YES
                       encoding:NSUTF8StringEncoding
@@ -82,234 +165,175 @@
         
         return nil;
     }] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        self.uploadButton.enabled = YES;
-        self.pauseButton.enabled = YES;
-        self.resumeButton.enabled = YES;
-        self.cancelButton.enabled = YES;
+        [self updateUIForState:Ready];
+        
+        return nil;
+    }];
+}
 
+- (void)didReceiveMemoryWarning
+{
+    [super didReceiveMemoryWarning];
+    // Dispose of any resources that can be recreated.
+}
+
+- (void) submitUploadRequest:(AWSS3TransferManagerUploadRequest *)uploadRequest
+{
+    // Submit an asynchronous upload request
+    AWSS3TransferManager *transferManager = [AWSS3TransferManager defaultS3TransferManager];
+    static int completedCount = 0;
+    
+    [[transferManager upload:uploadRequest] continueWithExecutor:[BFExecutor mainThreadExecutor]
+                                                        withBlock:^id(BFTask *task)
+    {
+        // An task.error will be non-nil when an upload is paused or cancelled. This is expected behavior, so update the UI
+        if (task.error != nil)
+        {
+            if (task.error.code == AWSS3TransferManagerErrorCancelled)
+            {
+                NSLog(@"Upload cancelled for: %@", uploadRequest.key);
+                [self updateUIForState:Ready];
+            }
+            else if (task.error.code == AWSS3TransferManagerErrorPaused)
+            {
+                NSLog(@"%s %@","Upload paused for :", uploadRequest.key);
+                [self updateUIForState:Paused];
+            }
+            else /* an actual error occured */
+            {
+                NSLog(@"%s %@","Error uploading :", uploadRequest.key);
+                [self updateUIForState:Failed];
+            }
+        }
+        else
+        {
+            // The download operation completed without error
+            completedCount++;
+                                                                
+            NSLog(@"Upload of %@ completed", uploadRequest.key);
+            NSLog(@"completedCount = %d", completedCount);
+                                                                
+            // Only update the UI to completed when all three uploads complete
+            if (completedCount == 3)
+            {
+                [self updateUIForState:Completed];
+                completedCount = 0;
+            }
+        }
         return nil;
     }];
 }
 
 - (IBAction)uploadButtonPressed:(id)sender {
 
-    self.uploadStatusLabel.text = StatusLabelUploading;
-    [self cleanProgress];
-    
     __weak typeof(self) weakSelf = self;
     
+    // Create the upload requests
     self.uploadRequest1 = [AWSS3TransferManagerUploadRequest new];
     self.uploadRequest1.bucket = S3BucketName;
     self.uploadRequest1.key = S3KeyUploadName1;
     self.uploadRequest1.body = self.testFileURL1;
+    
+    // Create a code block that S3 will call with progress updates
     self.uploadRequest1.uploadProgress =  ^(int64_t bytesSent, int64_t totalBytesSent, int64_t totalBytesExpectedToSend){
         dispatch_sync(dispatch_get_main_queue(), ^{
             weakSelf.file1AlreadyUpload = totalBytesSent;
+            weakSelf.file1Size = totalBytesExpectedToSend;
             [weakSelf updateProgress];
         });
     };
-    
+
     self.uploadRequest2 = [AWSS3TransferManagerUploadRequest new];
     self.uploadRequest2.bucket = S3BucketName;
     self.uploadRequest2.key = S3KeyUploadName2;
     self.uploadRequest2.body = self.testFileURL2;
+    
+    // Create a code block that S3 will call with progress updates
     self.uploadRequest2.uploadProgress =  ^(int64_t bytesSent, int64_t totalBytesSent, int64_t totalBytesExpectedToSend){
         dispatch_sync(dispatch_get_main_queue(), ^{
             weakSelf.file2AlreadyUpload = totalBytesSent;
+            weakSelf.file2Size = totalBytesExpectedToSend;
             [weakSelf updateProgress];
         });
     };
-    
+  
     self.uploadRequest3 = [AWSS3TransferManagerUploadRequest new];
     self.uploadRequest3.bucket = S3BucketName;
     self.uploadRequest3.key = S3KeyUploadName3;
     self.uploadRequest3.body = self.testFileURL3;
+    
+    // Create a code block that S3 will call with progress updates
     self.uploadRequest3.uploadProgress =  ^(int64_t bytesSent, int64_t totalBytesSent, int64_t totalBytesExpectedToSend){
         dispatch_sync(dispatch_get_main_queue(), ^{
             weakSelf.file3AlreadyUpload = totalBytesSent;
+            weakSelf.file3Size = totalBytesExpectedToSend;
             [weakSelf updateProgress];
         });
     };
+
+    // Update the UI
+    [self updateUIForState:Uploading];
+    [self cleanProgress];
     
+    // Upload files
     [self uploadFiles];
     
 }
 
-- (IBAction)cancelButtonPressed:(id)sender {
-    __block int cancelCount = 0;
+- (void) uploadFiles
+{
+    // Submit ansychronous calls to upload the files
+    if (self.uploadRequest1.state == AWSS3TransferManagerRequestStateRunning || self.uploadRequest1.state == AWSS3TransferManagerRequestStatePaused)
+        [self submitUploadRequest:self.uploadRequest1];
     
-    [[self.uploadRequest1 cancel] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if(task.error.code != AWSS3TransferManagerErrorCancelled)
-            {
-                NSLog(@"%s Error: [%@]", __PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest1 = nil;
-            cancelCount++;
-            if(3 == cancelCount)
-                self.uploadStatusLabel.text = StatusLabelReady;
-        }
-        return nil;
-    }];
+    if (self.uploadRequest2.state == AWSS3TransferManagerRequestStateRunning || self.uploadRequest2.state == AWSS3TransferManagerRequestStatePaused)
+        [self submitUploadRequest:self.uploadRequest2];
     
-    [[self.uploadRequest2 cancel] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if(task.error.code != AWSS3TransferManagerErrorCancelled)
-            {
-                NSLog(@"%s Error: [%@]",__PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest1 = nil;
-            cancelCount++;
-            if(3 == cancelCount)
-                self.uploadStatusLabel.text = StatusLabelReady;
-        }
-        return nil;
-    }];
+    if (self.uploadRequest3.state == AWSS3TransferManagerRequestStateRunning || self.uploadRequest3.state == AWSS3TransferManagerRequestStatePaused)
+        [self submitUploadRequest:self.uploadRequest3];
+}
+
+- (IBAction)cancelButtonPressed:(id)sender
+{
+    // Cancel the download requests and update the UI when all operations complete.
+    NSMutableArray *tasksToCancel = [[NSMutableArray alloc] init];
     
-    [[self.uploadRequest3 cancel] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if( task.error.code != AWSS3TransferManagerErrorCancelled)
-            {
-                NSLog(@"%s Error: [%@]", __PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest1 = nil;
-            cancelCount++;
-            if(3 == cancelCount)
-                self.uploadStatusLabel.text = StatusLabelReady;
-        }
-        return nil;
+    [tasksToCancel addObject:[self.uploadRequest1 cancel]];
+    [tasksToCancel addObject:[self.uploadRequest2 cancel]];
+    [tasksToCancel addObject:[self.uploadRequest3 cancel]];
+    
+    [[BFTask taskForCompletionOfAllTasks:tasksToCancel] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
+        [self updateUIForState:Cancelled];
+        return task;
     }];
 }
 
 - (IBAction)pauseButtonPressed:(id)sender {
 
-    __block int pauseCount = 0;
-    [[self.uploadRequest1 pause] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if( ! task.error.code == AWSS3TransferManagerErrorCancelled && ! task.error.code == AWSS3TransferManagerErrorPaused )
-            {
-                NSLog(@"%s Error: [%@]",__PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            pauseCount++;
-            if(3 == pauseCount) {
-                self.uploadStatusLabel.text = StatusLabelReady;
-            }
-            
-        }
-        return nil;
-    }];
+    // Pause the current upload operations and update the UI when all operations complete
+    // NOTE: If the files you are uploading are < 5MB the upload will simply be cancelled. If the files you are uploading are > 5MB the S3 Transfer Manager will pause the upload operation
+    NSMutableArray *tasksToPause = [[NSMutableArray alloc] init];
     
-    [[self.uploadRequest2 pause] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if( ! task.error.code == AWSS3TransferManagerErrorCancelled && ! task.error.code == AWSS3TransferManagerErrorPaused )
-            {
-                NSLog(@"%s Error: [%@]",__PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            pauseCount++;
-            if(3 == pauseCount) {
-                self.uploadStatusLabel.text = StatusLabelReady;
-            }
-        }
-        return nil;
-    }];
+    [tasksToPause addObject:[self.uploadRequest1 pause]];
+    [tasksToPause addObject:[self.uploadRequest2 pause]];
+    [tasksToPause addObject:[self.uploadRequest3 pause]];
     
-    [[self.uploadRequest3 pause] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if(task.error != nil){
-            if( ! task.error.code == AWSS3TransferManagerErrorCancelled && ! task.error.code == AWSS3TransferManagerErrorPaused )
-            {
-                NSLog(@"%s Error: [%@]",__PRETTY_FUNCTION__, task.error);
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            pauseCount++;
-            if(3 == pauseCount) {
-                self.uploadStatusLabel.text = StatusLabelReady;
-            }
-        }
-        return nil;
+    [[BFTask taskForCompletionOfAllTasks:tasksToPause] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
+        [self updateUIForState:Paused];
+        return task;
     }];
 }
 
-- (IBAction)resumeButtonPressed:(id)sender {
+- (IBAction)resumeButtonPressed:(id)sender
+{
+    // The SDK will automatically handle restarting the upload if the file is > 5MB, otherwise the upload will start over
     [self uploadFiles];
+    [self updateUIForState:Uploading];
 }
 
-- (void) uploadFiles {
-    AWSS3TransferManager *transferManager = [AWSS3TransferManager defaultS3TransferManager];
-
-    __block int uploadCount = 0;
-    [[transferManager upload:self.uploadRequest1] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if (task.error != nil) {
-            if( task.error.code != AWSS3TransferManagerErrorCancelled
-               &&
-                task.error.code != AWSS3TransferManagerErrorPaused
-               )
-            {
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest1 = nil;
-            uploadCount ++;
-            if(3 == uploadCount){
-                self.uploadStatusLabel.text = StatusLabelCompleted;
-            }
-        }
-        return nil;
-    }];
-    
-    [[transferManager upload:self.uploadRequest2] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if (task.error != nil) {
-            if( task.error.code != AWSS3TransferManagerErrorCancelled
-               &&
-                task.error.code != AWSS3TransferManagerErrorPaused
-               )
-            {
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest2 = nil;
-            uploadCount ++;
-            if(3 == uploadCount){
-                self.uploadStatusLabel.text = StatusLabelCompleted;
-            }
-        }
-        return nil;
-    }];
-    
-    [[transferManager upload:self.uploadRequest3] continueWithExecutor:[BFExecutor mainThreadExecutor] withBlock:^id(BFTask *task) {
-        if (task.error != nil) {
-            if( task.error.code != AWSS3TransferManagerErrorCancelled
-               &&
-                task.error.code != AWSS3TransferManagerErrorPaused
-               )
-            {
-                self.uploadStatusLabel.text = StatusLabelFailed;
-            }
-        } else {
-            self.uploadRequest3 = nil;
-            uploadCount ++;
-            if(3 == uploadCount){
-                self.uploadStatusLabel.text = StatusLabelCompleted;
-            }
-        }
-        return nil;
-    }];
-
-
-}
-
-- (void)updateProgress {
-    
+- (void) updateProgress
+{
+    // Calculate length of progress bar
     if (self.file1AlreadyUpload <= self.file1Size)
     {
         self.progressView1.progress = (float)self.file1AlreadyUpload / (float)self.file1Size;
@@ -324,17 +348,20 @@
     {
         self.progressView3.progress = (float)self.file3AlreadyUpload / (float)self.file3Size;
     }
-    
 }
 
-
-- (void) cleanProgress {
+- (void) cleanProgress
+{
+    // reset progress bars and values used to calculate progress bar completion.
     self.progressView1.progress = 0;
     self.progressView2.progress = 0;
     self.progressView3.progress = 0;
     
+    self.file1Size = 0;
     self.file1AlreadyUpload = 0;
+    self.file2Size = 0;
     self.file2AlreadyUpload = 0;
+    self.file3Size = 0;
     self.file3AlreadyUpload = 0;
 }
 

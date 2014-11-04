@@ -17,12 +17,21 @@
 
 @interface FirstViewController : UIViewController
 
+// Status Label
 @property (nonatomic, weak) IBOutlet UILabel *uploadStatusLabel;
+
+// Buttons
 @property (nonatomic, weak) IBOutlet UIButton *uploadButton;
 @property (nonatomic, weak) IBOutlet UIButton *pauseButton;
 @property (nonatomic, weak) IBOutlet UIButton *resumeButton;
 @property (nonatomic, weak) IBOutlet UIButton *cancelButton;
 
+// File Upload Progress Views (Bars)
+@property (strong, nonatomic) IBOutlet UIProgressView *progressView1;
+@property (strong, nonatomic) IBOutlet UIProgressView *progressView2;
+@property (strong, nonatomic) IBOutlet UIProgressView *progressView3;
+
+// Button Handlers
 - (IBAction)uploadButtonPressed:(id)sender;
 - (IBAction)pauseButtonPressed:(id)sender;
 - (IBAction)resumeButtonPressed:(id)sender;

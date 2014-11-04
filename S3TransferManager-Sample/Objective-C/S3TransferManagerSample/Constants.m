@@ -40,3 +40,4 @@ NSString *const StatusLabelUploading = @"Uploading...";
 NSString *const StatusLabelDownloading = @"Downloading...";
 NSString *const StatusLabelFailed = @"Failed";
 NSString *const StatusLabelCompleted = @"Completed";
+NSString *const StatusLabelCancelled = @"Cancelled";
